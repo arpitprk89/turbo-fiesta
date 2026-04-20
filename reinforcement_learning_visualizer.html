@@ -1,0 +1,225 @@
+
+<h2 class="sr-only">Interactive Reinforcement Learning Visualizer — agent learns to navigate a grid using Q-learning</h2>
+
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:var(--font-sans)}
+.wrap{padding:1rem 0}
+.top-cards{display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin-bottom:1.5rem}
+.mcard{background:var(--color-background-secondary);border-radius:var(--border-radius-md);padding:.875rem 1rem}
+.mcard .lbl{font-size:12px;color:var(--color-text-secondary);margin-bottom:4px}
+.mcard .val{font-size:22px;font-weight:500;color:var(--color-text-primary)}
+.section{background:var(--color-background-primary);border:0.5px solid var(--color-border-tertiary);border-radius:var(--border-radius-lg);padding:1rem 1.25rem;margin-bottom:1rem}
+.sec-title{font-size:13px;font-weight:500;color:var(--color-text-secondary);margin-bottom:.75rem;text-transform:uppercase;letter-spacing:.04em}
+.grid-wrap{display:flex;justify-content:center;margin-bottom:.5rem}
+.cell{width:52px;height:52px;border:0.5px solid var(--color-border-tertiary);border-radius:4px;display:flex;align-items:center;justify-content:center;font-size:11px;font-weight:500;position:relative;transition:background .15s}
+.controls{display:flex;gap:10px;flex-wrap:wrap;align-items:center;margin-bottom:1rem}
+.controls label{font-size:13px;color:var(--color-text-secondary)}
+.controls input[type=range]{width:110px}
+.controls span{font-size:13px;font-weight:500;min-width:28px}
+.btn-row{display:flex;gap:8px;margin-bottom:1rem}
+.legend{display:flex;gap:16px;flex-wrap:wrap;font-size:12px;color:var(--color-text-secondary);margin-top:.5rem}
+.legend span{display:flex;align-items:center;gap:5px}
+.dot{width:12px;height:12px;border-radius:2px}
+.charts-row{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+.chart-box{position:relative;height:180px}
+</style>
+
+<div class="wrap">
+  <div class="top-cards">
+    <div class="mcard"><div class="lbl">Episode</div><div class="val" id="ep">0</div></div>
+    <div class="mcard"><div class="lbl">Total reward</div><div class="val" id="tr">0</div></div>
+    <div class="mcard"><div class="lbl">Steps</div><div class="val" id="st">0</div></div>
+    <div class="mcard"><div class="lbl">Epsilon (explore)</div><div class="val" id="eps">1.00</div></div>
+  </div>
+
+  <div class="section">
+    <div class="sec-title">Grid world — agent learns to reach goal</div>
+    <div class="controls">
+      <label>Learning rate (α)</label>
+      <input type="range" id="lr" min="1" max="9" value="3" step="1">
+      <span id="lr-out">0.3</span>
+      <label style="margin-left:12px">Discount (γ)</label>
+      <input type="range" id="gm" min="5" max="10" value="9" step="1">
+      <span id="gm-out">0.9</span>
+      <label style="margin-left:12px">Speed</label>
+      <input type="range" id="spd" min="1" max="5" value="3" step="1">
+      <span id="spd-out">3</span>
+    </div>
+    <div class="btn-row">
+      <button id="btn-start" onclick="startTraining()">Start training ↗</button>
+      <button id="btn-pause" onclick="pauseTraining()" disabled>Pause</button>
+      <button onclick="resetAll()">Reset</button>
+    </div>
+    <div class="grid-wrap">
+      <div id="grid-el" style="display:grid;grid-template-columns:repeat(5,52px);gap:3px"></div>
+    </div>
+    <div class="legend">
+      <span><span class="dot" style="background:#378ADD"></span>Agent</span>
+      <span><span class="dot" style="background:#639922"></span>Goal (+10)</span>
+      <span><span class="dot" style="background:#E24B4A"></span>Trap (−5)</span>
+      <span><span class="dot" style="background:#888780"></span>Empty</span>
+      <span><span class="dot" style="background:#EF9F27"></span>Q-value heat</span>
+    </div>
+  </div>
+
+  <div class="charts-row">
+    <div class="section">
+      <div class="sec-title">Reward per episode</div>
+      <div class="chart-box"><canvas id="rewChart" role="img" aria-label="Line chart showing reward per episode over time">Reward increases as agent learns.</canvas></div>
+    </div>
+    <div class="section">
+      <div class="sec-title">Epsilon decay (exploration → exploitation)</div>
+      <div class="chart-box"><canvas id="epsChart" role="img" aria-label="Line chart showing epsilon decay over episodes">Epsilon starts at 1 and decays over time.</canvas></div>
+    </div>
+  </div>
+</div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.js"></script>
+<script>
+const ROWS=4,COLS=5,STATES=ROWS*COLS;
+const GOAL=19,TRAPS=[7,11,14];
+const ACTIONS=4;
+let Q,ep,epsilon,rewHistory,epsHistory,agentPos,running,timer,totalReward,steps;
+
+function idx(r,c){return r*COLS+c;}
+function rc(s){return[Math.floor(s/COLS),s%COLS];}
+
+function initQ(){
+  Q=[];
+  for(let i=0;i<STATES;i++){Q.push([0,0,0,0]);}
+}
+
+function resetAll(){
+  clearInterval(timer);running=false;
+  ep=0;epsilon=1.0;rewHistory=[];epsHistory=[];
+  totalReward=0;steps=0;agentPos=0;
+  initQ();
+  updateCards();
+  renderGrid();
+  rewChart.data.labels=[];rewChart.data.datasets[0].data=[];rewChart.update();
+  epsChart.data.labels=[];epsChart.data.datasets[0].data=[];epsChart.update();
+  document.getElementById('btn-start').disabled=false;
+  document.getElementById('btn-pause').disabled=true;
+}
+
+function step(pos,action){
+  let[r,c]=rc(pos);
+  if(action===0)r=Math.max(0,r-1);
+  else if(action===1)r=Math.min(ROWS-1,r+1);
+  else if(action===2)c=Math.max(0,c-1);
+  else c=Math.min(COLS-1,c+1);
+  let ns=idx(r,c);
+  let reward=TRAPS.includes(ns)?-5:ns===GOAL?10:-0.1;
+  let done=ns===GOAL||TRAPS.includes(ns);
+  return{ns,reward,done};
+}
+
+function getLR(){return parseFloat(document.getElementById('lr').value)/10;}
+function getGamma(){return parseFloat(document.getElementById('gm').value)/10;}
+function getSpeed(){return parseInt(document.getElementById('spd').value);}
+
+function runEpisode(){
+  let pos=0,done=false,epReward=0,epSteps=0,maxSteps=80;
+  while(!done&&epSteps<maxSteps){
+    let action;
+    if(Math.random()<epsilon){action=Math.floor(Math.random()*ACTIONS);}
+    else{action=Q[pos].indexOf(Math.max(...Q[pos]));}
+    let{ns,reward,done:d}=step(pos,action);
+    let lr=getLR(),gamma=getGamma();
+    let maxNext=Math.max(...Q[ns]);
+    Q[pos][action]+=lr*(reward+gamma*maxNext-Q[pos][action]);
+    pos=ns;epReward+=reward;epSteps++;done=d;
+  }
+  ep++;agentPos=pos;totalReward+=epReward;steps+=epSteps;
+  epsilon=Math.max(0.05,epsilon*0.97);
+  rewHistory.push(parseFloat(epReward.toFixed(2)));
+  epsHistory.push(parseFloat(epsilon.toFixed(3)));
+  updateCards();
+  renderGrid();
+  updateCharts();
+}
+
+function updateCards(){
+  document.getElementById('ep').textContent=ep;
+  document.getElementById('tr').textContent=totalReward.toFixed(1);
+  document.getElementById('st').textContent=steps;
+  document.getElementById('eps').textContent=epsilon.toFixed(2);
+}
+
+function renderGrid(){
+  const g=document.getElementById('grid-el');
+  g.innerHTML='';
+  let maxQ=0;
+  for(let s=0;s<STATES;s++){let m=Math.max(...Q[s]);if(m>maxQ)maxQ=m;}
+  for(let s=0;s<STATES;s++){
+    let d=document.createElement('div');
+    d.className='cell';
+    if(s===agentPos){d.style.background='#378ADD';d.style.color='#fff';d.textContent='A';}
+    else if(s===GOAL){d.style.background='#639922';d.style.color='#fff';d.textContent='G';}
+    else if(TRAPS.includes(s)){d.style.background='#E24B4A';d.style.color='#fff';d.textContent='T';}
+    else{
+      let qv=Math.max(...Q[s]);
+      let intensity=maxQ>0?qv/maxQ:0;
+      intensity=Math.max(0,Math.min(1,intensity));
+      let r=Math.round(234+(239-234)*intensity);
+      let g2=Math.round(238+(159-238)*intensity);
+      let b=Math.round(218+(39-218)*intensity);
+      d.style.background=`rgb(${r},${g2},${b})`;
+      d.style.color='var(--color-text-secondary)';
+      d.textContent=qv>0?qv.toFixed(1):'';
+    }
+    g.appendChild(d);
+  }
+}
+
+function updateCharts(){
+  let labels=rewHistory.map((_,i)=>i+1);
+  rewChart.data.labels=labels;
+  rewChart.data.datasets[0].data=rewHistory;
+  rewChart.update('none');
+  epsChart.data.labels=labels;
+  epsChart.data.datasets[0].data=epsHistory;
+  epsChart.update('none');
+}
+
+function startTraining(){
+  if(running)return;
+  running=true;
+  document.getElementById('btn-start').disabled=true;
+  document.getElementById('btn-pause').disabled=false;
+  function loop(){
+    if(!running)return;
+    let batch=getSpeed()*2;
+    for(let i=0;i<batch;i++)runEpisode();
+    timer=setTimeout(loop,100);
+  }
+  loop();
+}
+
+function pauseTraining(){
+  running=false;clearTimeout(timer);
+  document.getElementById('btn-start').disabled=false;
+  document.getElementById('btn-pause').disabled=true;
+}
+
+document.getElementById('lr').oninput=function(){document.getElementById('lr-out').textContent=(this.value/10).toFixed(1);};
+document.getElementById('gm').oninput=function(){document.getElementById('gm-out').textContent=(this.value/10).toFixed(1);};
+document.getElementById('spd').oninput=function(){document.getElementById('spd-out').textContent=this.value;};
+
+const chartDefaults={responsive:true,maintainAspectRatio:false,animation:false,plugins:{legend:{display:false}},elements:{point:{radius:0}},scales:{x:{ticks:{maxTicksLimit:8,color:'#888780'},grid:{color:'rgba(136,135,128,0.15)'}},y:{ticks:{color:'#888780'},grid:{color:'rgba(136,135,128,0.15)'}}}};
+
+const rewChart=new Chart(document.getElementById('rewChart'),{
+  type:'line',
+  data:{labels:[],datasets:[{label:'Reward',data:[],borderColor:'#378ADD',borderWidth:1.5,fill:true,backgroundColor:'rgba(55,138,221,0.08)'}]},
+  options:{...chartDefaults,scales:{...chartDefaults.scales,y:{...chartDefaults.scales.y,suggestedMin:-6,suggestedMax:12}}}
+});
+
+const epsChart=new Chart(document.getElementById('epsChart'),{
+  type:'line',
+  data:{labels:[],datasets:[{label:'Epsilon',data:[],borderColor:'#EF9F27',borderWidth:1.5,fill:true,backgroundColor:'rgba(239,159,39,0.08)'}]},
+  options:{...chartDefaults,scales:{...chartDefaults.scales,y:{...chartDefaults.scales.y,min:0,max:1}}}
+});
+
+resetAll();
+</script>
